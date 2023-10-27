@@ -201,6 +201,17 @@ for eachObs in obsdir:
 		if ("reg" in reg) and ("po" in reg):
 			regfile = reg
 			break
+	
+	#reading the source coordinates from the region file created by the xrtpipeline
+	regfile_cood = open(regfile, 'r')
+	cood = regfile_cood.read()
+	regfile_cood.close()
+	cood = cood[cood.find('(')+1 : cood.find(')')]
+	cood = cood.split(',')
+	srcx = cood[0]
+	srcx = float(srcx)
+	srcy = cood[1]
+	srcy = float(srcy)
 
 	#Bin the events in cleaned event file into pixels
 	if obmode == "wt":
@@ -226,17 +237,6 @@ for eachObs in obsdir:
 			if count > tempMax:
 				tempMax = count
 				sourceCoords = coordinate
-	
-	#reading the source coordinates from the region file created by the xrtpipeline
-	regfile_cood = open(regfile, 'r')
-	cood = regfile_cood.read()
-	regfile_cood.close()
-	cood = cood[cood.find('(')+1 : cood.find(')')]
-	cood = cood.split(',')
-	srcx = cood[0]
-	srcx = float(srcx)
-	srcy = cood[1]
-	srcy = float(srcy)
 
 	if obmode == "wt" and (srcra == "OBJECT" or srcdec == "OBJECT"):
 		srcx = sourceCoords[0]
@@ -244,7 +244,47 @@ for eachObs in obsdir:
 
 		with open("sw" + obsid + "xwtw2po.reg", "w") as tempFile:
 			tempFile.write("CIRCLE ("+ str(srcx) +","+ str(srcy) +","+ str(sourceRadius) +")\n")
-	
+
+	elif obmode == "pc" and (srcra == "OBJECT" or srcdec == "OBJECT"):
+		with fits.open("sw"+obsid+"xpcw3po_cl.evt") as hdu:
+			srcra = hdu[1].header["RA_OBJ"]
+			srcdec = hdu[1].header["DEC_OBJ"]
+
+		if Path("position.txt").exists():
+			os.system("rm position.txt")
+		
+		boxHalfWidth = 10	# 10 arcmin
+		xrtcentroid = "xrtcentroid infile=sw" + obsid+ "xpcw3po_cl.evt outfile=position.txt outdir=" + outdir + " calcpos=yes interactive=no boxra=" + str(srcra) + " boxdec=" + str(srcdec) + " boxradius=" + str(boxHalfWidth)
+
+		#Running xrtcentroid to refind source position
+		os.system(xrtcentroid)
+
+		#Rerun xrtcentroid using previous call's coordinates as input with smaller boxes each iteration
+		boxWidths = [5, 2, 1]
+		for boxHalfWidth in boxWidths:
+			with open("position.txt", "r") as posfile:
+				fileLines = posfile.readlines()
+				srcra = float(fileLines[2].split(" ")[-1])
+				srcdec = float(fileLines[3].split(" ")[-1])
+			
+			if Path("position.txt").exists():
+				os.system("rm position.txt")
+
+			xrtcentroid = "xrtcentroid infile=sw" + obsid+ "xpcw3po_cl.evt outfile=position.txt outdir=" + outdir + " calcpos=yes interactive=no boxra=" + str(srcra) + " boxdec=" + str(srcdec) + " boxradius=" + str(boxHalfWidth)
+
+			#Running xrtcentroid to refind source position
+			os.system(xrtcentroid)
+		
+		with open("position.txt", "r") as posfile:
+			fileLines = posfile.readlines()
+			srcx = float(fileLines[11].split(" ")[-1])
+			srcy = float(fileLines[12].split(" ")[-1])
+			source_ra = float(fileLines[2].split(" ")[-1])
+			source_dec = float(fileLines[3].split(" ")[-1])
+
+		with open("sw" + obsid + "xpcw3po.reg", "w") as tempFile:
+			tempFile.write("CIRCLE ("+ str(srcx) +","+ str(srcy) +","+ str(sourceRadius) +")\n")
+
 	# Determine the pixel count in source/background region for scaling the BACKSCAL values
 	if obmode == "wt":
 		sourcePixels = 0

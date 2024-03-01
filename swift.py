@@ -26,6 +26,21 @@ import subprocess, os, re, time
 from parameter import *
 from pathlib import Path
 from astropy.io import fits
+import sys
+import heasoftpy as hsp
+
+# check the installation #
+if not 'HEADAS' in os.environ:
+    raise RuntimeError('Heasoft is not initalized')
+
+try:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.abspath(''), '..')))
+    import heasoftpy as hsp
+except ImportError:
+    raise RuntimeError('Please ensure heasoftpy is in your PYTHONPATH')
+    
+if not hasattr(hsp, 'ftlist'):
+    raise RuntimeError('Heasoftpy is not full installed. Please run the install.py script')
 
 cwd = os.getcwd()
 script_path = os.path.abspath(__file__)
@@ -34,6 +49,11 @@ index = script_path[::-1].find("/")
 parentDir = script_path[::-1][index+1:]
 parentDir = parentDir[::-1]
 ##################################################################     PC/WT     ########################################################################################
+
+if ignore_radius >= sourceRadius:
+	print("Ignore radius for annulus (inner radius) is bigger than source radius (outer radius)")
+	print(f"Enter an ignore radius value that is smaller than {sourceRadius} and rerun the script.")
+	quit()
 
 #reads lines of the input.txt file into a list
 inputFile = open(parentDir +"/"+ inputTxt,'r')               #open the swift file    
@@ -47,7 +67,8 @@ for line in inputFile.readlines():              #loop to record the information 
 inputFile.close()
 
 for eachObs in obsdir:
-	warning_messages = []
+	print("=======================================================================")
+	print("=======================================================================")
 
 	ev = '/xrt/event'
 	obsdir = eachObs
@@ -60,15 +81,26 @@ for eachObs in obsdir:
 
 	#creating obsid from obsdir
 	obsid_temp = obsdir_temp[:obsdir_temp.find('/')]
-	#print(obsid_temp)
 	obsid = obsid_temp[::-1]
 	print(obsdir)
+	
+	#output directory for screened files coming out of xrtpipeline
+	outdir = cwd + "/"  + obsid + '-xrt'
+	print('outdir: ' + outdir)
 
+	#create the outdir directory if it does not already exist
+	if Path(outdir).exists() == False:
+		os.system("mkdir " + outdir)
+
+	#name of the file where warning messages will be recorded
+	warninglog = "warning_" + obsid + ".log"
+	warning_file = open(outdir + "/" + warninglog, "w")  
+	
 	obmode = ""
 	PC = False
 	WT = False
 	#determines if an observation was recorded in a PC or a WT mode
-	if (os.path.exists(obsdir)):            
+	if (os.path.exists(obsdir)):
 		event = os.listdir(evtdir)     		#array holds the foldernames in the observation directory
 		
 		for file in event:
@@ -94,13 +126,13 @@ for eachObs in obsdir:
 			if windowed_ontime > photon_ontime:
 				obmode = "wt"
 				print("Current observation mode: WT")
-				warning_messages.append("Warning: WT mode has been automatically selected over PC mode due to having a larger ontime.\n")
-				warning_messages.append("WT mode ontime: " + str(windowed_ontime) + " | PC mode ontime: " + str(photon_ontime) + "\n\n")
+				warning_file.write("Warning: WT mode has been automatically selected over PC mode due to having a larger ontime.\n")
+				warning_file.write("WT mode ontime: " + str(windowed_ontime) + " | PC mode ontime: " + str(photon_ontime) + "\n\n")
 			else:
 				obmode = "pc"
 				print("Current observation mode: PC")
-				warning_messages.append("Warning: PC mode has been automatically selected over WT mode due to having a larger ontime.\n")
-				warning_messages.append("WT mode ontime: " + str(windowed_ontime) + " | PC mode ontime: " + str(photon_ontime) + "\n\n")
+				warning_file.write("Warning: PC mode has been automatically selected over WT mode due to having a larger ontime.\n")
+				warning_file.write("WT mode ontime: " + str(windowed_ontime) + " | PC mode ontime: " + str(photon_ontime) + "\n\n")
 
 		elif PC:
 			print("Observation mode: PC")
@@ -114,6 +146,7 @@ for eachObs in obsdir:
 
 	else:
 		print('Observation not found')
+		continue
 
 	#Find the appropriate event file
 	if obmode == "wt":
@@ -135,15 +168,8 @@ for eachObs in obsdir:
 	steminputs = 'sw' + obsid
 	print('steminputs: ' + steminputs)
 
-	#output directory for screened files coming out of xrtpipeline
-	outdir = cwd + "/"  + obsid + '-xrt'
-	print('outdir: ' + outdir)
-
 	#name of the file where the log of xrtpipeline is recorded
 	xrtlog = 'xrt_' + obsid + '.log'
-
-	#name of the file where warning messages will be recorded
-	warninglog = "warning_" + obsid + ".log"
 
 	if RA == "":
 		srcra = "OBJECT"
@@ -156,19 +182,15 @@ for eachObs in obsdir:
 	else:
 		DEC = str(DEC)
 		srcdec = "'" + DEC + "'"
-
+	
 	xrt = "xrtpipeline indir=" + indir + " steminputs=" + steminputs + " outdir=" + outdir + " srcra=" + srcra + " srcdec=" + srcdec + " createexpomap=yes useexpomap=yes plotdevice=ps correctlc=yes clobber=yes cleanup=no > " + xrtlog
 	print('Running pipeline command: ' + xrt)
-
-	#create the outdir directory if it does not already exist
-	if Path(outdir).exists() == False:
-		os.system("mkdir " + outdir)
 
 	#change directory to outdir
 	os.chdir(outdir)
 
 	os.system(xrt)
-	#######################################################################     XSELECT      ################################################################################
+	############################	Finding rmf file	########################################
 	if obmode == "wt":
 		modeKeyword = "windowed"
 		grade = "G0:2"
@@ -177,9 +199,10 @@ for eachObs in obsdir:
 		grade = "G0:12"
 	else:
 		print("Unknown observation mode.\n")
+		warning_file.write("Unknown observation mode.\n")
+		warning_file.close()
 		continue
 
-	#(NOT A PART OF XSELECT) finding the rmf file in CALDB and copying it to the outdir
 	print("Running quzcif to find rmf file.\n")
 	p = subprocess.Popen( "quzcif SWIFT XRT - - matrix - - datamode.eq."+ modeKeyword +".and.grade.eq." + grade +".and.XRTVSUB.eq.6", stdout=subprocess.PIPE, shell=True)
 	(quzcif_output, err) = p.communicate()
@@ -189,13 +212,29 @@ for eachObs in obsdir:
 	quzcif = quzcif.strip("1b\\n' ").split(" ")
 	quzcifFile = quzcif[-1].strip("1b\\n'")
 	os.system('cp '+  quzcifFile + ' ' + outdir)
-	#time.sleep(15)
-	print('rmf file location: ' + quzcifFile)
+	try:
+		print('rmf file location: ' + quzcifFile)
+	except Exception as e:
+		print(f"Could not find rmf file in CALDB: {e}\n")
+		warning_file.write(f"Could not find rmf file in CALDB: {e}\n")
+		warning_file.close()
+		continue
 
-	#recording the filenames of the event directory in an array to be searched in below
 	xrt_filelist = os.listdir(outdir)
 
+	#finding the rmf file in the xrt files (was copied here from CALDB)
+	for rmf in xrt_filelist:
+		if (re.search('rmf', rmf, re.M|re.I)):
+			rmffile = rmf
+	try:
+		print('rmf file: ' + rmffile)
+	except Exception as e:
+		print(f"Could not find rmf file in output directory: {e}\n")
+		warning_file.write(f"Could not find rmf file in output directory: {e}\n")
+		warning_file.close()
+		continue
 
+	########################	Extracting source coordinates	########################
 	#finding the region file in the screened xrt files
 	for reg in xrt_filelist:
 		if ("reg" in reg) and ("po" in reg):
@@ -203,7 +242,14 @@ for eachObs in obsdir:
 			break
 	
 	#reading the source coordinates from the region file created by the xrtpipeline
-	regfile_cood = open(regfile, 'r')
+	try:
+		regfile_cood = open(regfile, 'r')
+	except Exception as e:
+		print(f"Could not open region file: {e}")
+		warning_file.write(f"Could not open region file: {e}")
+		warning_file.close()
+		continue
+
 	cood = regfile_cood.read()
 	regfile_cood.close()
 	cood = cood[cood.find('(')+1 : cood.find(')')]
@@ -214,89 +260,92 @@ for eachObs in obsdir:
 	srcy = float(srcy)
 
 	#Bin the events in cleaned event file into pixels
-	if obmode == "wt":
-		hdu = fits.open("sw" + obsid + "xwtw2po_cl.evt")
-	
-		pixelCounts = {}
-		events = hdu[1].data
-
-		for eachEvent in events:
-			imageX = eachEvent[1]
-			imageY = eachEvent[2]
-
-			coordinate = (imageX, imageY)
-
-			if coordinate in pixelCounts:
-				pixelCounts[coordinate] += 1
-			else:
-				pixelCounts[coordinate] = 1
+	if recalculate_source_center:
+		if obmode == "wt":
+			try:
+				hdu = fits.open("sw" + obsid + "xwtw2po_cl.evt")
+			except Exception as e:
+				print(f"Exception occured while trying to open sw{obsid}xwtw2po_cl.evt: {e}")
+				warning_file.write(f"Exception occured while trying to open sw{obsid}xwtw2po_cl.evt: {e}")
+				warning_file.close()
+				continue
 		
-		tempMax = 0
-		sourceCoords = (0, 0)
-		for coordinate, count in pixelCounts.items():
-			if count > tempMax:
-				tempMax = count
-				sourceCoords = coordinate
+			pixelCounts = {}
+			events = hdu[1].data
 
-	if obmode == "wt" and (srcra == "OBJECT" or srcdec == "OBJECT"):
-		srcx = sourceCoords[0]
-		srcy = sourceCoords[1]
+			for eachEvent in events:
+				imageX = eachEvent[1]
+				imageY = eachEvent[2]
 
-		with open("sw" + obsid + "xwtw2po.reg", "w") as tempFile:
-			tempFile.write("CIRCLE ("+ str(srcx) +","+ str(srcy) +","+ str(sourceRadius) +")\n")
+				coordinate = (imageX, imageY)
 
-	elif obmode == "pc" and (srcra == "OBJECT" or srcdec == "OBJECT"):
-		with fits.open("sw"+obsid+"xpcw3po_cl.evt") as hdu:
-			srcra = hdu[1].header["RA_OBJ"]
-			srcdec = hdu[1].header["DEC_OBJ"]
-
-		if Path("position.txt").exists():
-			os.system("rm position.txt")
-		
-		boxHalfWidth = 10	# 10 arcmin
-		xrtcentroid = "xrtcentroid infile=sw" + obsid+ "xpcw3po_cl.evt outfile=position.txt outdir=" + outdir + " calcpos=yes interactive=no boxra=" + str(srcra) + " boxdec=" + str(srcdec) + " boxradius=" + str(boxHalfWidth)
-
-		#Running xrtcentroid to refind source position
-		os.system(xrtcentroid)
-
-		#Rerun xrtcentroid using previous call's coordinates as input with smaller boxes each iteration
-		boxWidths = [5, 2, 1]
-		for boxHalfWidth in boxWidths:
-			with open("position.txt", "r") as posfile:
-				fileLines = posfile.readlines()
-				srcra = float(fileLines[2].split(" ")[-1])
-				srcdec = float(fileLines[3].split(" ")[-1])
+				if coordinate in pixelCounts:
+					pixelCounts[coordinate] += 1
+				else:
+					pixelCounts[coordinate] = 1
 			
+			tempMax = 0
+			sourceCoords = (0, 0)
+			for coordinate, count in pixelCounts.items():
+				if count > tempMax:
+					tempMax = count
+					sourceCoords = coordinate
+
+			srcx = sourceCoords[0]
+			srcy = sourceCoords[1]
+
+			with open(regfile, "w") as tempFile:
+				tempFile.write("CIRCLE ("+ str(srcx) +","+ str(srcy) +","+ str(sourceRadius) +")\n")
+
+		elif obmode == "pc":
+			with fits.open("sw"+obsid+"xpcw3po_cl.evt") as hdu:
+				srcra = hdu[1].header["RA_OBJ"]
+				srcdec = hdu[1].header["DEC_OBJ"]
+
 			if Path("position.txt").exists():
 				os.system("rm position.txt")
-
+			
+			boxHalfWidth = 10	# 10 arcmin
 			xrtcentroid = "xrtcentroid infile=sw" + obsid+ "xpcw3po_cl.evt outfile=position.txt outdir=" + outdir + " calcpos=yes interactive=no boxra=" + str(srcra) + " boxdec=" + str(srcdec) + " boxradius=" + str(boxHalfWidth)
 
 			#Running xrtcentroid to refind source position
 			os.system(xrtcentroid)
+
+			#Rerun xrtcentroid using previous call's coordinates as input with smaller boxes each iteration
+			boxWidths = [5, 2, 1]
+			for boxHalfWidth in boxWidths:
+				with open("position.txt", "r") as posfile:
+					fileLines = posfile.readlines()
+					srcra = float(fileLines[2].split(" ")[-1])
+					srcdec = float(fileLines[3].split(" ")[-1])
+				
+				if Path("position.txt").exists():
+					os.system("rm position.txt")
+
+				xrtcentroid = "xrtcentroid infile=sw" + obsid+ "xpcw3po_cl.evt outfile=position.txt outdir=" + outdir + " calcpos=yes interactive=no boxra=" + str(srcra) + " boxdec=" + str(srcdec) + " boxradius=" + str(boxHalfWidth)
+
+				#Running xrtcentroid to refind source position
+				os.system(xrtcentroid)
 		
-		with open("position.txt", "r") as posfile:
-			fileLines = posfile.readlines()
-			srcx = float(fileLines[11].split(" ")[-1])
-			srcy = float(fileLines[12].split(" ")[-1])
-			source_ra = float(fileLines[2].split(" ")[-1])
-			source_dec = float(fileLines[3].split(" ")[-1])
+			with open("position.txt", "r") as posfile:
+				fileLines = posfile.readlines()
+				srcx = float(fileLines[11].split(" ")[-1])
+				srcy = float(fileLines[12].split(" ")[-1])
+				source_ra = float(fileLines[2].split(" ")[-1])
+				source_dec = float(fileLines[3].split(" ")[-1])
 
-		with open("sw" + obsid + "xpcw3po.reg", "w") as tempFile:
-			tempFile.write("CIRCLE ("+ str(srcx) +","+ str(srcy) +","+ str(sourceRadius) +")\n")
+			with open("sw" + obsid + "xpcw3po.reg", "w") as tempFile:
+				tempFile.write("CIRCLE ("+ str(srcx) +","+ str(srcy) +","+ str(sourceRadius) +")\n")
 
-	# Determine the pixel count in source/background region for scaling the BACKSCAL values
-	if obmode == "wt":
-		sourcePixels = 0
-		backgroundPixels = 0
-		for xvalue, yvalue in pixelCounts.keys():
-			xDiff = (srcx - xvalue)**2
-			yDiff = (srcy - yvalue)**2
-			trueDistance = abs((xDiff + yDiff)**0.5)
-			if trueDistance < sourceRadius:
-				sourcePixels += 1
-			elif (trueDistance > innerRadius) and (trueDistance < outerRadius):
-				backgroundPixels += 1
+	if pileup:
+		print("Pileup mode is set to True. Converting source region from circle to annulus.")
+		print(f"Inner radius: {ignore_radius}")
+		print(f"Outer radius: {sourceRadius}")
+		temp_file = open(regfile, "w")
+		temp_file.write('annulus (' + str(srcx) + ',' + str(srcy) + ','+str(ignore_radius)+','+str(sourceRadius)+')\n')
+		temp_file.close()
+
+	############################################################################################
 
 	# Region manipulation for PC
 	if obmode == 'pc':
@@ -383,35 +432,43 @@ for eachObs in obsdir:
 	xsel_file.close()
 
 	os.system('xselect @' + xsel_filename)
-
-	if obmode == "wt":
-		with fits.open("sw"+obsid+"_spectrum.pha", mode='update') as hdu:
-			hdu[1].header["BACKSCAL"] = sourcePixels
-			hdu.flush()
-		
-		with fits.open("sw"+obsid+"xwtw2posr.pha", mode='update') as hdu:
-			hdu[1].header["BACKSCAL"] = sourcePixels
-			hdu.flush()
-		
-		with fits.open("sw"+obsid+"back_spectrum.pha", mode='update') as hdu:
-			hdu[1].header["BACKSCAL"] = backgroundPixels
-			hdu.flush()
-
-	#changing back to starting working directory
-	#os.chdir(wd)
+	try:
+		if obmode == "wt":
+			with fits.open("sw"+obsid+"_spectrum.pha", mode='update') as hdu:
+				if pileup:
+					hdu[1].header["BACKSCAL"] = sourceRadius*2 - ignore_radius*2
+				else:
+					hdu[1].header["BACKSCAL"] = sourceRadius*2
+				hdu.flush()
+			
+			with fits.open("sw"+obsid+"xwtw2posr.pha", mode='update') as hdu:
+				if pileup:
+					hdu[1].header["BACKSCAL"] = sourceRadius*2 - ignore_radius*2
+				else:
+					hdu[1].header["BACKSCAL"] = sourceRadius*2
+				hdu.flush()
+			
+			with fits.open("sw"+obsid+"back_spectrum.pha", mode='update') as hdu:
+				hdu[1].header["BACKSCAL"] = outerRadius - innerRadius - 1
+				hdu.flush()
+	except Exception as e:
+		print(f"Exception occured while trying to update sw{obsid}_spectrum.pha file: {e}\n")
+		warning_file.write(f"Exception occured while trying to update sw{obsid}_spectrum.pha file: {e}\n")
+		warning_file.close()
+		continue
 
 	#finding the arf file in the screened xrt files
 	for arf in xrt_filelist:
 		if (re.search('arf', arf, re.M|re.I)):
 			if (re.search('po', arf, re.M|re.I)):
 				arffile = arf
-	print('arf file: ' + arffile)
-
-	#finding the rmf file in the xrt files (was copied here from CALDB)
-	for rmf in xrt_filelist:
-		if (re.search('rmf', rmf, re.M|re.I)):
-			rmffile = rmf
-	print('rmf file: ' + rmffile)
+	try:
+		print('arf file: ' + arffile)
+	except Exception as e:
+		print(f"Could not find arf file in output directory: {e}\n")
+		warning_file.write(f"Could not find arf file in output directory: {e}\n")
+		warning_file.close()
+		continue
 
 	# Renew the list variable to to include new files
 	xrt_filelist = os.listdir(outdir)
@@ -427,24 +484,30 @@ for eachObs in obsdir:
 
 	# Create arf file using xrtmkarf after spectrum file is created
 	# oldarffile variable is just used for naming the output file
-	xrtmkarf = "xrtmkarf outfile=" + oldarffile + " rmffile=" + rmffile + " clobber=yes expofile=" + exposurefile + " phafile=" + spectrumfile + " srcx=-1 srcy=-1 psfflag=yes >> " + xrtlog
-	os.system(xrtmkarf)
+	try:
+		xrtmkarf = "xrtmkarf outfile=" + oldarffile + " rmffile=" + rmffile + " clobber=yes expofile=" + exposurefile + " phafile=" + spectrumfile + f" srcx={srcx} srcy={srcy} psfflag=yes >> " + xrtlog
+		os.system(xrtmkarf)
+	except Exception as e:
+		print(f"Exception occured while running xrtmkarf command: {e}\n")
+		warning_file.write(f"Exception occured while running xrtmkarf command: {e}\n")
+		warning_file.close()
+		continue
 
 	#grppha
-	grp_out = '!sw' + obsid + '_grp.pha'
-	backfile = 'sw' + obsid + 'back_spectrum.pha'
-	grppha = "grppha infile= '" + "sw" + obsid + "_spectrum.pha'" + " outfile='" + grp_out + "' chatter=0 comm='group min 10 & bad 0-29 & chkey backfile " + backfile + " & chkey ancrfile " + arffile + " & chkey respfile " + rmffile + " & exit'"
-	print(grppha)
-	os.system(grppha)
-
-	#write all warning messages
-	if Path(outdir + "/" + warninglog).exists() == False:
-		os.system("touch " + outdir + "/" + warninglog)
-		
-	warning = open(warninglog, "w")
-	for msg in warning_messages:
-		warning.write(msg)
-	warning.close()
+	try:
+		grp_out = '!sw' + obsid + '_grp.pha'
+		backfile = 'sw' + obsid + 'back_spectrum.pha'
+		grppha = "grppha infile= '" + "sw" + obsid + "_spectrum.pha'" + " outfile='" + grp_out + "' chatter=0 comm='group min 10 & bad 0-29 & chkey backfile " + backfile + " & chkey ancrfile " + arffile + " & chkey respfile " + rmffile + " & exit'"
+		print(grppha)
+		os.system(grppha)
+	except Exception as e:
+		print(f"Exception occured while creating grppha file: {e}\n")
+		warning_file.write(f"Exception occured while creating grppha file: {e}\n")
+		warning_file.close()
+		continue
+	
+	warning_file.write("Finished with no errors/warnings.\n")
+	warning_file.close()
 
 #########################################################################################################################################################################
 

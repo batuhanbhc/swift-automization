@@ -1,1 +1,4 @@
+/home/bbahceci/SWIFT/data/j1820+070/00010627002
+/home/bbahceci/SWIFT/data/j1820+070/00010627007
+/home/bbahceci/SWIFT/data/j1820+070/00010627011
 /home/bbahceci/SWIFT/data/j1820+070/00015032021

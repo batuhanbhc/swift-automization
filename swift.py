@@ -48,11 +48,21 @@ script_path = os.path.abspath(__file__)
 index = script_path[::-1].find("/")
 parentDir = script_path[::-1][index+1:]
 parentDir = parentDir[::-1]
+
+debug_file = open("debug.log", "w")
 ##################################################################     PC/WT     ########################################################################################
 
 if ignore_radius >= sourceRadius:
 	print("Ignore radius for annulus (inner radius) is bigger than source radius (outer radius)")
 	print(f"Enter an ignore radius value that is smaller than {sourceRadius} and rerun the script.")
+	debug_file.write("EXITED WITH ERROR: INCORRECT 'ignore_radius' IN 'parameter.py\n")
+	debug_file.close()
+	quit()
+elif ignore_radius < 0:
+	print("Ignore radius for annulus (inner radius) is smaller than 0.")
+	print(f"Enter a non-negative value for ignore_radius.")
+	debug_file.write("EXITED WITH ERROR: INCORRECT 'ignore_radius' IN 'parameter.py\n")
+	debug_file.close()
 	quit()
 
 #reads lines of the input.txt file into a list
@@ -94,7 +104,13 @@ for eachObs in obsdir:
 
 	#name of the file where warning messages will be recorded
 	warninglog = "warning_" + obsid + ".log"
-	warning_file = open(outdir + "/" + warninglog, "w")  
+	try:
+		warning_file = open(outdir + "/" + warninglog, "w")
+	except Exception as e:
+		print(f"Exception occured while creating warning{obsid}.log file: {e}\n")
+		warning_file.write(f"Exception occured while creating warning{obsid}.log file: {e}\n")
+		warning_file.close()
+		debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
 	
 	obmode = ""
 	PC = False
@@ -141,11 +157,15 @@ for eachObs in obsdir:
 			print("Observation mode: WT")
 			obmode = "wt"
 		else:
-			print("Neither PC nor WT mode files could be found. Skipping the current observation...")
+			print("Neither PC nor WT mode files was found. Skipping the current observation...")
+			warning_file.write("Neither PC nor WT mode files could be found. Skipping the current observation...\n")
+			warning_file.close()
+			debug_file.write(f"Observation {obsid}: FAILED (Neither PC nor WT mode files was found)\n")
 			continue
 
 	else:
 		print('Observation not found')
+		debug_file.write(f"Observation {obsid}: FAILED (Observation not found)\n")
 		continue
 
 	#Find the appropriate event file
@@ -201,6 +221,7 @@ for eachObs in obsdir:
 		print("Unknown observation mode.\n")
 		warning_file.write("Unknown observation mode.\n")
 		warning_file.close()
+		debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
 		continue
 
 	print("Running quzcif to find rmf file.\n")
@@ -218,6 +239,7 @@ for eachObs in obsdir:
 		print(f"Could not find rmf file in CALDB: {e}\n")
 		warning_file.write(f"Could not find rmf file in CALDB: {e}\n")
 		warning_file.close()
+		debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
 		continue
 
 	xrt_filelist = os.listdir(outdir)
@@ -232,6 +254,7 @@ for eachObs in obsdir:
 		print(f"Could not find rmf file in output directory: {e}\n")
 		warning_file.write(f"Could not find rmf file in output directory: {e}\n")
 		warning_file.close()
+		debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
 		continue
 
 	########################	Extracting source coordinates	########################
@@ -248,6 +271,7 @@ for eachObs in obsdir:
 		print(f"Could not open region file: {e}")
 		warning_file.write(f"Could not open region file: {e}")
 		warning_file.close()
+		debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
 		continue
 
 	cood = regfile_cood.read()
@@ -259,37 +283,43 @@ for eachObs in obsdir:
 	srcy = cood[1]
 	srcy = float(srcy)
 
+	if obmode == "wt":
+		try:
+			hdu = fits.open("sw" + obsid + "xwtw2po_cl.evt")
+		except Exception as e:
+			print(f"Exception occured while trying to open sw{obsid}xwtw2po_cl.evt: {e}")
+			warning_file.write(f"Exception occured while trying to open sw{obsid}xwtw2po_cl.evt: {e}")
+			warning_file.close()
+			debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
+			continue
+	
+		pixelCounts = {}
+		events = hdu[1].data
+
+		for eachEvent in events:
+			imageX = eachEvent[1]
+			imageY = eachEvent[2]
+
+			coordinate = (imageX, imageY)
+
+			if coordinate in pixelCounts:
+				pixelCounts[coordinate] += 1
+			else:
+				pixelCounts[coordinate] = 1
+		
+		tempMax = 0
+		sourceCoords = (0, 0)
+		for coordinate, count in pixelCounts.items():
+			if count > tempMax:
+				tempMax = count
+				sourceCoords = coordinate
+	
+	if pileup == False:
+		ignore_radius = 0
+
 	#Bin the events in cleaned event file into pixels
 	if recalculate_source_center:
 		if obmode == "wt":
-			try:
-				hdu = fits.open("sw" + obsid + "xwtw2po_cl.evt")
-			except Exception as e:
-				print(f"Exception occured while trying to open sw{obsid}xwtw2po_cl.evt: {e}")
-				warning_file.write(f"Exception occured while trying to open sw{obsid}xwtw2po_cl.evt: {e}")
-				warning_file.close()
-				continue
-		
-			pixelCounts = {}
-			events = hdu[1].data
-
-			for eachEvent in events:
-				imageX = eachEvent[1]
-				imageY = eachEvent[2]
-
-				coordinate = (imageX, imageY)
-
-				if coordinate in pixelCounts:
-					pixelCounts[coordinate] += 1
-				else:
-					pixelCounts[coordinate] = 1
-			
-			tempMax = 0
-			sourceCoords = (0, 0)
-			for coordinate, count in pixelCounts.items():
-				if count > tempMax:
-					tempMax = count
-					sourceCoords = coordinate
 
 			srcx = sourceCoords[0]
 			srcy = sourceCoords[1]
@@ -434,27 +464,34 @@ for eachObs in obsdir:
 	os.system('xselect @' + xsel_filename)
 	try:
 		if obmode == "wt":
+			back_pixels = 0
+			source_pixels = 0
+			center_x = sourceCoords[0]
+			center_y = sourceCoords[1]
+
+			for x_coord, y_coord in pixelCounts.keys():
+				center_distance = ((center_x - x_coord)**2 + (center_y - y_coord)**2)**(0.5)
+				if (ignore_radius <= center_distance <= sourceRadius):
+					source_pixels += 1
+				elif (innerRadius <= center_distance <= outerRadius):
+					back_pixels += 1
+
 			with fits.open("sw"+obsid+"_spectrum.pha", mode='update') as hdu:
-				if pileup:
-					hdu[1].header["BACKSCAL"] = sourceRadius*2 - ignore_radius*2
-				else:
-					hdu[1].header["BACKSCAL"] = sourceRadius*2
+				hdu[1].header["BACKSCAL"] = source_pixels
 				hdu.flush()
 			
 			with fits.open("sw"+obsid+"xwtw2posr.pha", mode='update') as hdu:
-				if pileup:
-					hdu[1].header["BACKSCAL"] = sourceRadius*2 - ignore_radius*2
-				else:
-					hdu[1].header["BACKSCAL"] = sourceRadius*2
+				hdu[1].header["BACKSCAL"] = source_pixels
 				hdu.flush()
 			
 			with fits.open("sw"+obsid+"back_spectrum.pha", mode='update') as hdu:
-				hdu[1].header["BACKSCAL"] = outerRadius - innerRadius - 1
+				hdu[1].header["BACKSCAL"] = back_pixels - 1
 				hdu.flush()
 	except Exception as e:
-		print(f"Exception occured while trying to update sw{obsid}_spectrum.pha file: {e}\n")
-		warning_file.write(f"Exception occured while trying to update sw{obsid}_spectrum.pha file: {e}\n")
+		print(f"Exception occured while trying to BACKSCAL parameters for source and background spectrum files: {e}\n")
+		warning_file.write(f"Exception occured while trying to BACKSCAL parameters for source and background spectrum files: {e}\n")
 		warning_file.close()
+		debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
 		continue
 
 	#finding the arf file in the screened xrt files
@@ -468,6 +505,7 @@ for eachObs in obsdir:
 		print(f"Could not find arf file in output directory: {e}\n")
 		warning_file.write(f"Could not find arf file in output directory: {e}\n")
 		warning_file.close()
+		debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
 		continue
 
 	# Renew the list variable to to include new files
@@ -491,6 +529,7 @@ for eachObs in obsdir:
 		print(f"Exception occured while running xrtmkarf command: {e}\n")
 		warning_file.write(f"Exception occured while running xrtmkarf command: {e}\n")
 		warning_file.close()
+		debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
 		continue
 
 	#grppha
@@ -504,12 +543,15 @@ for eachObs in obsdir:
 		print(f"Exception occured while creating grppha file: {e}\n")
 		warning_file.write(f"Exception occured while creating grppha file: {e}\n")
 		warning_file.close()
+		debug_file.write(f"Observation {obsid}: FAILED ({e})\n")
 		continue
 	
+	debug_file.write(f"Observation {obsid}: SUCCEEDED\n")
 	warning_file.write("Finished with no errors/warnings.\n")
 	warning_file.close()
 
 #########################################################################################################################################################################
+debug_file.close()
 
 if Path(script_path[:script_path.rfind("/")] + "/__pycache__").exists():
 	os.system("rm -rf " + script_path[:script_path.rfind("/")] + "/__pycache__")
